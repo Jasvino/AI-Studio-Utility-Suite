@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "AI Studio - Delete from here",
+  "version": "1.0",
+  "description": "Add Delete from here button in AI Studio",
+  "content_scripts": [
+    {
+      "matches": ["https://aistudio.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}
