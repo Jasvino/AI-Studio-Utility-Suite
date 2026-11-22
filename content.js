@@ -1,8 +1,9 @@
-// AI Studio Helpers: "Delete from here" + "Search text" + "Go to top"
+// AI Studio Helpers: "Delete from here" + "Clear chat" + "Search text" + "Go to top"
 (() => {
     'use strict';
 
     const MENU_BTN_ID = 'custom-delete-from-here-btn';
+    const CLEAR_CHAT_BTN_ID = 'custom-clear-chat-btn';
     const SEARCH_BTN_ID = 'custom-chat-search-btn';
     const SEARCH_PANEL_ID = 'custom-chat-search-panel';
     const SEARCH_STYLE_ID = 'custom-chat-search-style';
@@ -14,13 +15,24 @@
     const SEARCH_MARK_ATTR = 'data-custom-search-mark';
     const MAX_SEARCH_MATCHES = 3000;
 
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const DELETE_SWEEP_SVG_PATH =
+        'M15 18v-2h4v2zm0-8V8h7v2zm0 4v-2h6v2zM3 8H2V6h4V4.5h4V6h4v2h-1v9q0 .825-.587 1.413T11 19H5q-.825 0-1.412-.587T3 17zm2 0v9h6V8zm0 0v9z';
+
     // Selectors (update here if Google changes the UI)
     const SELECTORS = {
-        // Delete from here
+        // Delete from here & Clear chat
         turn: 'ms-chat-turn',
         turnOptionsBtn: 'ms-chat-turn-options button',
         menuContent: 'div.mat-mdc-menu-content',
         menuItem: 'button[role="menuitem"], button.mat-mdc-menu-item',
+        rawModeMenuItem: [
+            'button[data-test-raw-mode]',
+            '[data-test-raw-mode]',
+            '[data-test-id*="raw-mode" i]',
+            '[data-test-id*="raw_mode" i]',
+            '[data-test-id*="rawMode"]'
+        ].join(', '),
         icon: '.material-symbols-outlined, mat-icon',
         backdrop: '.cdk-overlay-backdrop',
 
@@ -181,13 +193,69 @@
     }
 
     // =========================================================================
-    // Feature 1: Delete from here
+    // Feature 1 & 4: Delete from here + Clear chat
     // =========================================================================
+
+    function getMenuItemLabelText(el) {
+        let text = '';
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+            if (node.parentElement && node.parentElement.closest(SELECTORS.icon)) {
+                continue;
+            }
+            text += node.nodeValue;
+        }
+        return text.replace(/\s+/g, ' ').trim();
+    }
+
+    function hasMessagesInCurrentChat() {
+        return Boolean(
+            document.querySelector(SELECTORS.turn) ||
+            document.querySelector(SELECTORS.scrollbarButtons)
+        );
+    }
+
+    function createDeleteSweepSvg(size = '1em') {
+        const svg = document.createElementNS(SVG_NS, 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('width', size);
+        svg.setAttribute('height', size);
+        svg.setAttribute('fill', 'currentColor');
+        svg.setAttribute('aria-hidden', 'true');
+        svg.style.width = size;
+        svg.style.height = size;
+        svg.style.minWidth = size;
+        svg.style.minHeight = size;
+        svg.style.display = 'block';
+        svg.style.flex = 'none';
+
+        const path = document.createElementNS(SVG_NS, 'path');
+        path.setAttribute('d', DELETE_SWEEP_SVG_PATH);
+        svg.appendChild(path);
+
+        return svg;
+    }
+
+    async function closeOpenMenus() {
+        if (!document.querySelector(SELECTORS.menuContent)) return;
+
+        const backdrops = document.querySelectorAll(SELECTORS.backdrop);
+        if (backdrops.length > 0) {
+            backdrops[backdrops.length - 1].click();
+        } else {
+            document.dispatchEvent(
+                new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true })
+            );
+        }
+
+        await waitUntil(() => !document.querySelector(SELECTORS.menuContent), 1000, 15);
+    }
 
     function findNativeDeleteButton(menuEl) {
         const items = menuEl.querySelectorAll(SELECTORS.menuItem);
         for (const item of items) {
-            if (item.id === MENU_BTN_ID) continue;
+            if (item.id === MENU_BTN_ID || item.id === CLEAR_CHAT_BTN_ID) continue;
             const icon = item.querySelector(SELECTORS.icon);
             if (
                 icon &&
@@ -239,6 +307,230 @@
         return customBtn;
     }
 
+    function findRawModeMenuItem(menuEl) {
+        if (!menuEl) return null;
+
+        const byAttr = menuEl.querySelector(SELECTORS.rawModeMenuItem);
+        if (byAttr && byAttr.id !== CLEAR_CHAT_BTN_ID) {
+            return getDirectChild(menuEl, byAttr) || byAttr;
+        }
+
+        const candidates = menuEl.querySelectorAll(
+            'button[role="menuitem"], button[role="menuitemcheckbox"], button.mat-mdc-menu-item, [role="menuitem"], [role="menuitemcheckbox"], a.mat-mdc-menu-item'
+        );
+        for (const item of candidates) {
+            if (item.id === CLEAR_CHAT_BTN_ID || item.id === MENU_BTN_ID) continue;
+            const label = getMenuItemLabelText(item);
+            const aria = item.getAttribute('aria-label') || '';
+            if (/\bRaw\s*Mode\b/i.test(label) || /\bRaw\s*Mode\b/i.test(aria)) {
+                return getDirectChild(menuEl, item) || item;
+            }
+        }
+
+        for (const child of menuEl.children) {
+            if (child.id === CLEAR_CHAT_BTN_ID || child.id === MENU_BTN_ID) continue;
+            const label = getMenuItemLabelText(child);
+            if (/\bRaw\s*Mode\b/i.test(label)) {
+                return child;
+            }
+        }
+
+        return null;
+    }
+
+    function findTemplateMenuButton(menuEl, rawModeAnchor) {
+        const items = Array.from(menuEl.querySelectorAll(SELECTORS.menuItem));
+        let fallback = null;
+
+        for (const item of items) {
+            if (item.id === CLEAR_CHAT_BTN_ID || item.id === MENU_BTN_ID) continue;
+
+            const hasToggle = Boolean(
+                item.querySelector('mat-slide-toggle, [role="switch"], .mdc-switch')
+            );
+            const isCheckbox = item.getAttribute('role') === 'menuitemcheckbox';
+            const isRawMode =
+                item === rawModeAnchor || (rawModeAnchor && rawModeAnchor.contains(item));
+            const isDelete = /\bDelete\b/i.test(getMenuItemLabelText(item));
+            const hasExtraChrome = Boolean(
+                item.querySelector('[class*="badge" i], [class*="chip" i], kbd, .shortcut')
+            );
+
+            if (!hasToggle && !isCheckbox && !isRawMode && !isDelete && !hasExtraChrome) {
+                return item;
+            }
+            if (!fallback && !hasToggle) {
+                fallback = item;
+            }
+        }
+
+        return fallback;
+    }
+
+    function createClearChatMenuItem(menuEl, rawModeAnchor) {
+        const templateBtn = findTemplateMenuButton(menuEl, rawModeAnchor);
+        let customBtn;
+
+        if (templateBtn) {
+            customBtn = templateBtn.cloneNode(true);
+            customBtn.id = CLEAR_CHAT_BTN_ID;
+            customBtn.type = 'button';
+            customBtn.dataset.clonedNative = '1';
+
+            const attrsToRemove = [
+                'disabled',
+                'aria-disabled',
+                'aria-checked',
+                'aria-expanded',
+                'aria-haspopup',
+                'aria-controls',
+                'aria-describedby',
+                'cdk-describedby-host',
+                'jsaction',
+                'jslog',
+                'style'
+            ];
+            for (const attr of attrsToRemove) {
+                customBtn.removeAttribute(attr);
+            }
+            for (const attr of Array.from(customBtn.attributes)) {
+                if (attr.name.startsWith('data-test')) {
+                    customBtn.removeAttribute(attr.name);
+                }
+            }
+
+            customBtn.classList.remove(
+                'mat-mdc-menu-item-disabled',
+                'mdc-list-item--disabled',
+                'cdk-focused',
+                'cdk-mouse-focused',
+                'cdk-keyboard-focused',
+                'cdk-program-focused',
+                'active',
+                'selected'
+            );
+            customBtn.setAttribute('role', 'menuitem');
+
+            for (const extra of customBtn.querySelectorAll(
+                'mat-slide-toggle, [role="switch"], .mdc-switch, kbd, .shortcut, [class*="badge" i], [class*="chip" i]'
+            )) {
+                extra.remove();
+            }
+
+            const icons = Array.from(customBtn.querySelectorAll(SELECTORS.icon));
+            for (let i = 1; i < icons.length; i++) {
+                icons[i].remove();
+            }
+
+            if (icons.length > 0) {
+                const iconEl = icons[0];
+                const hadSvg = Boolean(iconEl.querySelector('svg'));
+                iconEl.removeAttribute('fonticon');
+                iconEl.textContent = '';
+                iconEl.style.display = 'inline-flex';
+                iconEl.style.alignItems = 'center';
+                iconEl.style.justifyContent = 'center';
+                iconEl.appendChild(createDeleteSweepSvg(hadSvg ? '100%' : '1em'));
+            } else {
+                const iconSpan = document.createElement('span');
+                iconSpan.className = 'mat-icon';
+                iconSpan.setAttribute('aria-hidden', 'true');
+                iconSpan.style.display = 'inline-flex';
+                iconSpan.style.alignItems = 'center';
+                iconSpan.style.justifyContent = 'center';
+                iconSpan.style.width = '20px';
+                iconSpan.style.height = '20px';
+                iconSpan.style.fontSize = '20px';
+                iconSpan.style.marginRight = '12px';
+                iconSpan.appendChild(createDeleteSweepSvg('1em'));
+                customBtn.prepend(iconSpan);
+            }
+
+            const walker = document.createTreeWalker(customBtn, NodeFilter.SHOW_TEXT);
+            let replaced = false;
+            let node;
+            while ((node = walker.nextNode())) {
+                if (node.parentElement && node.parentElement.closest(SELECTORS.icon)) {
+                    continue;
+                }
+                if (node.nodeValue.trim().length > 0) {
+                    if (!replaced) {
+                        node.nodeValue = node.nodeValue.replace(/\S[\s\S]*\S|\S/, 'Clear chat');
+                        replaced = true;
+                    } else {
+                        node.nodeValue = '';
+                    }
+                }
+            }
+
+            if (!replaced) {
+                const fallbackSpan = document.createElement('span');
+                fallbackSpan.className = 'mat-mdc-menu-item-text';
+                fallbackSpan.textContent = 'Clear chat';
+                customBtn.appendChild(fallbackSpan);
+            }
+        } else {
+            customBtn = document.createElement('button');
+            customBtn.id = CLEAR_CHAT_BTN_ID;
+            customBtn.type = 'button';
+            customBtn.className = 'mat-mdc-menu-item mat-focus-indicator';
+            customBtn.setAttribute('mat-menu-item', '');
+            customBtn.setAttribute('role', 'menuitem');
+
+            const iconSpan = document.createElement('span');
+            iconSpan.className = 'mat-icon';
+            iconSpan.setAttribute('aria-hidden', 'true');
+            iconSpan.style.display = 'inline-flex';
+            iconSpan.style.alignItems = 'center';
+            iconSpan.style.justifyContent = 'center';
+            iconSpan.style.width = '20px';
+            iconSpan.style.height = '20px';
+            iconSpan.style.fontSize = '20px';
+            iconSpan.appendChild(createDeleteSweepSvg('1em'));
+
+            const textSpan = document.createElement('span');
+            textSpan.className = 'mat-mdc-menu-item-text';
+            textSpan.textContent = 'Clear chat';
+
+            customBtn.append(iconSpan, textSpan);
+        }
+
+        customBtn.setAttribute('aria-label', 'Clear chat');
+
+        const canClear = !isDeleting && hasMessagesInCurrentChat();
+        if (!canClear) {
+            customBtn.disabled = true;
+            customBtn.setAttribute('aria-disabled', 'true');
+        }
+
+        customBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (customBtn.disabled || isDeleting || !hasMessagesInCurrentChat()) return;
+            handleClearChat();
+        });
+
+        return customBtn;
+    }
+
+    function injectClearChatMenuItem(menuEl, rawModeAnchor) {
+        const existingInMenu = menuEl.querySelector(`#${CLEAR_CHAT_BTN_ID}`);
+        if (existingInMenu) {
+            if (existingInMenu.previousElementSibling !== rawModeAnchor) {
+                rawModeAnchor.after(existingInMenu);
+            }
+            return;
+        }
+
+        const stale = document.getElementById(CLEAR_CHAT_BTN_ID);
+        if (stale && !menuEl.contains(stale)) {
+            stale.remove();
+        }
+
+        const clearBtn = createClearChatMenuItem(menuEl, rawModeAnchor);
+        rawModeAnchor.after(clearBtn);
+    }
+
     // Track which chat turn's three-dots button the user clicked
     document.addEventListener(
         'click',
@@ -264,14 +556,78 @@
         true
     );
 
+    async function deleteSingleTurn(turn, expectedPathname) {
+        if (!turn || !document.body.contains(turn)) return true;
+        if (expectedPathname && window.location.pathname !== expectedPathname) return false;
+
+        if (document.querySelector(SELECTORS.menuContent)) {
+            await closeOpenMenus();
+            if (!document.body.contains(turn)) return true;
+            if (expectedPathname && window.location.pathname !== expectedPathname) return false;
+        }
+
+        let optBtn = turn.querySelector(SELECTORS.turnOptionsBtn);
+        const optRect = optBtn ? optBtn.getBoundingClientRect() : null;
+        const optInView = Boolean(
+            optRect &&
+            optRect.width > 0 &&
+            optRect.bottom > 0 &&
+            optRect.top < window.innerHeight
+        );
+
+        if (!optBtn || !optInView) {
+            turn.scrollIntoView({ block: 'center', behavior: 'instant' });
+        }
+
+        turn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+
+        if (!optBtn) {
+            await waitUntil(
+                () =>
+                    !document.body.contains(turn) ||
+                    Boolean(turn.querySelector(SELECTORS.turnOptionsBtn)) ||
+                    Boolean(expectedPathname && window.location.pathname !== expectedPathname),
+                1200,
+                15
+            );
+            if (!document.body.contains(turn)) return true;
+            if (expectedPathname && window.location.pathname !== expectedPathname) return false;
+            optBtn = turn.querySelector(SELECTORS.turnOptionsBtn);
+        }
+
+        if (!optBtn || optBtn.disabled || optBtn.getAttribute('aria-disabled') === 'true') {
+            return false;
+        }
+
+        optBtn.click();
+
+        const menu = await waitForElement(SELECTORS.menuContent, 1500);
+        if (!menu) return false;
+
+        const deleteBtn = findNativeDeleteButton(menu);
+        if (!deleteBtn || deleteBtn.disabled || deleteBtn.getAttribute('aria-disabled') === 'true') {
+            await closeOpenMenus();
+            return false;
+        }
+
+        deleteBtn.click();
+
+        return await waitUntil(
+            () =>
+                (!document.body.contains(turn) && !document.querySelector(SELECTORS.menuContent)) ||
+                Boolean(expectedPathname && window.location.pathname !== expectedPathname),
+            2000,
+            15
+        );
+    }
+
     // Delete the selected turn and every subsequent turn (bottom-up)
     async function handleDeleteFromHere(targetTurn) {
         if (!targetTurn || isDeleting) return;
 
-        // Close the currently open menu cleanly first
-        const backdrop = document.querySelector(SELECTORS.backdrop);
-        if (backdrop) backdrop.click();
-        await waitUntil(() => !document.querySelector(SELECTORS.menuContent), 1000);
+        const startPathname = window.location.pathname;
+        await closeOpenMenus();
+        if (window.location.pathname !== startPathname) return;
 
         const allTurns = Array.from(document.querySelectorAll(SELECTORS.turn));
         const targetIndex = allTurns.indexOf(targetTurn);
@@ -282,36 +638,86 @@
 
         isDeleting = true;
         invalidateChatCache(true);
+        if (isSearchOpen) clearSearchResults();
+
         try {
             for (let i = turnsToDelete.length - 1; i >= 0; i--) {
-                const turn = turnsToDelete[i];
+                if (window.location.pathname !== startPathname) break;
 
+                const turn = turnsToDelete[i];
                 if (!document.body.contains(turn)) continue;
 
-                const optBtn = turn.querySelector(SELECTORS.turnOptionsBtn);
-                if (!optBtn) continue;
+                const deleted = await deleteSingleTurn(turn, startPathname);
+                if (deleted) {
+                    await sleep(30);
+                } else {
+                    await closeOpenMenus();
+                }
+            }
+        } finally {
+            isDeleting = false;
+        }
+    }
 
-                turn.scrollIntoView({ block: 'center', behavior: 'instant' });
-                turn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-                optBtn.click();
+    // Delete all messages in the current chat window (bottom-up)
+    async function handleClearChat() {
+        if (isDeleting || !hasMessagesInCurrentChat()) return;
 
-                const menu = await waitForElement(SELECTORS.menuContent, 1500);
-                if (!menu) continue;
+        const startPathname = window.location.pathname;
+        await closeOpenMenus();
+        if (window.location.pathname !== startPathname) return;
 
-                const deleteBtn = findNativeDeleteButton(menu);
-                if (!deleteBtn) {
-                    const bd = document.querySelector(SELECTORS.backdrop);
-                    if (bd) bd.click();
-                    continue;
+        isDeleting = true;
+        lastClickedTurn = null;
+        invalidateChatCache(true);
+        if (isSearchOpen) clearSearchResults();
+
+        const failedTurns = new WeakSet();
+        const maxIterations = 2000;
+        let iterations = 0;
+
+        try {
+            const scrollContainer = getPrimaryChatScrollContainer();
+
+            while (iterations++ < maxIterations) {
+                if (window.location.pathname !== startPathname) break;
+
+                const turns = Array.from(document.querySelectorAll(SELECTORS.turn));
+                let targetTurn = null;
+                for (let i = turns.length - 1; i >= 0; i--) {
+                    if (!failedTurns.has(turns[i])) {
+                        targetTurn = turns[i];
+                        break;
+                    }
                 }
 
-                deleteBtn.click();
+                if (!targetTurn) {
+                    // If scrollbar indicates virtualized turns haven't mounted into DOM yet, nudge scroll once
+                    if (
+                        scrollContainer &&
+                        document.querySelectorAll(SELECTORS.scrollbarButtons).length > 0 &&
+                        turns.length === 0
+                    ) {
+                        scrollContainer.scrollTo({ top: 0, behavior: 'instant' });
+                        await nextFrame();
+                        await sleep(120);
+                        const afterScrollTurns = Array.from(document.querySelectorAll(SELECTORS.turn));
+                        if (afterScrollTurns.some((t) => !failedTurns.has(t))) {
+                            continue;
+                        }
+                    }
+                    break;
+                }
 
-                await waitUntil(
-                    () => !document.body.contains(turn) && !document.querySelector(SELECTORS.menuContent),
-                    2000
-                );
-                await sleep(100);
+                const deleted = await deleteSingleTurn(targetTurn, startPathname);
+                if (window.location.pathname !== startPathname) break;
+
+                if (!deleted) {
+                    failedTurns.add(targetTurn);
+                    await closeOpenMenus();
+                } else {
+                    await sleep(30);
+                }
             }
         } finally {
             isDeleting = false;
@@ -437,6 +843,12 @@
             #${SEARCH_BTN_ID}[data-search-open="1"] {
                 background-color: light-dark(rgba(26, 115, 232, 0.12), rgba(138, 180, 248, 0.2));
                 color: light-dark(#1a73e8, #8ab4f8);
+            }
+            #${CLEAR_CHAT_BTN_ID}:not([data-cloned-native="1"]) {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                width: 100%;
             }
         `;
         (document.head || document.documentElement).appendChild(style);
@@ -2368,14 +2780,22 @@
     // =========================================================================
 
     const mainObserver = new MutationObserver(() => {
-        // 1. Inject "Delete from here" into chat turn menu overlay
-        if (!isDeleting && lastClickedTurn) {
-            const menu = document.querySelector(SELECTORS.menuContent);
-            if (menu && !document.getElementById(MENU_BTN_ID)) {
-                const nativeDeleteBtn = findNativeDeleteButton(menu);
-                if (nativeDeleteBtn) {
-                    const customBtn = createDeleteFromHereButton(nativeDeleteBtn);
-                    nativeDeleteBtn.after(customBtn);
+        // 1. Inject menu items into open overlays:
+        //    - "Clear chat" underneath "Raw Mode" in the toolbar three-dots menu
+        //    - "Delete from here" underneath "Delete" in a chat turn's three-dots menu
+        if (!isDeleting) {
+            for (const menu of document.querySelectorAll(SELECTORS.menuContent)) {
+                if (!menu.isConnected) continue;
+
+                const rawModeAnchor = findRawModeMenuItem(menu);
+                if (rawModeAnchor) {
+                    injectClearChatMenuItem(menu, rawModeAnchor);
+                } else if (lastClickedTurn && !menu.querySelector(`#${MENU_BTN_ID}`)) {
+                    const nativeDeleteBtn = findNativeDeleteButton(menu);
+                    if (nativeDeleteBtn) {
+                        const customBtn = createDeleteFromHereButton(nativeDeleteBtn);
+                        nativeDeleteBtn.after(customBtn);
+                    }
                 }
             }
         }
