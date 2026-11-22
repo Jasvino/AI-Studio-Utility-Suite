@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AI Studio - Delete from here",
+  "name": "AI Studio Utility Suite",
   "version": "1.0",
-  "description": "Add Delete from here button in AI Studio",
+  "description": "Adds several helpful features for AI Studio",
   "content_scripts": [
     {
       "matches": ["https://aistudio.google.com/*"],
